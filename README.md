@@ -12,7 +12,7 @@ python spidering.py https://example.com --depth 3 -o results.html
 ```
 ###Clone the repo:
 ```bash
-git clone https://github.com/Ly0kha/Spidering-Script.git
+git clone https://github.com/Ly0kha/spidering-Script.git
 ```
 ###requirements
 ```bash
