@@ -239,14 +239,23 @@ def crawl(url, depth_limit, timeout, filter_exts, args, breadth_first=True):
 
     if args.output and progress_bar:
         progress_bar.close()
-
+        
+def handle_exit_signal(sig, frame):
+    console.print("\n[bold yellow]CTRL+C detected. Saving results...[/bold yellow]")
+    if args.output:
+        save_results_to_html(args.output)
+    else:
+        display_results_in_terminal()
+    sys.exit(0)
+    
 def main():
-    global all_emails, all_internal_links, all_external_links, all_js_files, all_comments
+    global all_emails, all_internal_links, all_external_links, all_js_files, all_comments, args
     accessi_logo()
     args = get_args()
     filter_exts = args.filter.split(",") if args.filter else []
     
-    signal.signal(signal.SIGINT, lambda sig, frame: sys.exit(0))
+    # Handle CTRL+C to save results before exiting
+    signal.signal(signal.SIGINT, handle_exit_signal)
 
     console.print(f"Starting recon for {args.url} up to depth {args.depth}")
     
