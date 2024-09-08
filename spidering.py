@@ -1,24 +1,26 @@
 import argparse
 import requests
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, Comment
 from urllib.parse import urljoin, urlparse
 from collections import deque
 from rich.console import Console
 from rich.table import Table
-from rich.panel import Panel
 from tqdm import tqdm
+import re
 import signal
 import sys
 
 console = Console()
-visited = set()
-all_internal_links = []
-all_external_links = []
-progress_bar = None
+visited_urls = set()
+all_emails = set()
+all_internal_links = set()
+all_external_links = set()
+all_js_files = set()
+all_comments = set()
+progress_bar = None  # Define progress_bar globally
 
 def accessi_logo():
     logo = """
-
      \_______/
  `.,-'\_____/`-.,'
   /`..'\ _ /`.,'\
@@ -29,8 +31,7 @@ def accessi_logo():
   \,'`./___\,'`./
  ,'`-./_____\,-'`.
      /       \
-     Ly0kha 
-                      
+     Ly0kha @                     
     """
     console.print(logo, style="bold red")
 
@@ -50,50 +51,37 @@ def fetch_page(url, timeout):
         response.raise_for_status()
         return response.content
     except requests.RequestException as e:
-        if progress_bar is None:
-            console.print(f"[bold red]error fetching {url}: {e}")
+        console.print(f"[bold red]Error fetching {url}: {e}")
         return None
 
-def extract_links(html, base_url, filter_exts):
+def extract_links_and_content(html, base_url, filter_exts):
     soup = BeautifulSoup(html, "html.parser")
+    
     internal_links = set()
     external_links = set()
+    emails = set(re.findall(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}", str(soup)))
+    js_files = set(script['src'] for script in soup.find_all("script", src=True))
+    comments = [comment for comment in soup.find_all(string=lambda text: isinstance(text, Comment))]
 
     for anchor in soup.find_all("a", href=True):
         href = anchor["href"]
         full_url = urljoin(base_url, href)
+        
+        # skip unwanted links
         if full_url.startswith("mailto:") or full_url.startswith("javascript:"):
             continue
         if any(full_url.endswith(ext) for ext in filter_exts):
             continue
+        
+        # classify links as internal or external
         if urlparse(full_url).netloc == urlparse(base_url).netloc:
-            internal_links.add(full_url)
+            internal_links.add(full_url)  # internal links
         else:
-            external_links.add(full_url)
+            external_links.add(full_url)  # external links
 
-    return internal_links, external_links
-
-def display_results(url, internal_links, external_links):
-    console.print(Panel(f"[bold cyan]recon results for {url}:", style="bold white"))
-    table = Table(title="[bold green]internal links", show_lines=True)
-    table.add_column("No.", justify="center")
-    table.add_column("internal link", justify="left", style="green")
-    for i, link in enumerate(internal_links, 1):
-        table.add_row(str(i), link)
-    console.print(table)
-
-    if external_links:
-        ext_table = Table(title="[bold red]external links", show_lines=True)
-        ext_table.add_column("No.", justify="center")
-        ext_table.add_column("external link", justify="left", style="red")
-        for i, link in enumerate(external_links, 1):
-            ext_table.add_row(str(i), link)
-        console.print(ext_table)
-    else:
-        console.print("[bold yellow]no external links found.", style="bold yellow")
+    return internal_links, external_links, emails, js_files, comments
 
 def save_results_to_html(output_file):
-    spider_logo_url = "https://www.svgrepo.com/show/400766/spider.svg"
     html_content = f"""
     <html>
     <head>
@@ -101,174 +89,176 @@ def save_results_to_html(output_file):
         <style>
             body {{
                 font-family: "Courier New", Courier, monospace;
-                background-color: #1e1e1e;  /* dark background */
-                color: #dcdcdc;  /* soft white text */
-            }}
-            h1, h2 {{
-                text-align: center;
-                color: #c0c0c0;  /* light grey for headings */
+                background-color: #1e1e1e;
+                color: #dcdcdc;
             }}
             table {{
                 width: 100%;
                 border-collapse: collapse;
                 margin: 20px 0;
-                background-color: #2e2e2e;  /* slightly lighter dark grey for tables */
+                background-color: #2e2e2e;
             }}
             th, td {{
-                border: 1px solid #444;  /* dark grey borders */
+                border: 1px solid #444;
                 padding: 10px;
                 text-align: left;
-                font-family: "Courier New", Courier, monospace;
             }}
             th {{
-                background-color: #3e3e3e;  /* darker grey for table headers */
-                color: #dcdcdc;  /* soft white for table headers */
+                background-color: #3e3e3e;
+                color: #dcdcdc;
             }}
             td {{
-                color: #f5f5f5;  /* soft white for table cells */
-            }}
-            a {{
-                color: #5ac8fa;  /* soft blue for links */
-                text-decoration: none;
-            }}
-            a:hover {{
-                text-decoration: underline;
-                color: #8fbcbb;  /* light hover effect on links */
-            }}
-            .spider-logo {{
-                display: block;
-                margin-left: auto;
-                margin-right: auto;
-                width: 150px;
-            }}
-            .internal-links td {{
-                color: #b0e0e6;  /* light blue for internal links */
-            }}
-            .external-links td {{
-                color: #f08080;  /* light red for external links */
+                color: #f5f5f5;
             }}
         </style>
     </head>
     <body>
         <h1>Recon Results</h1>
-        <img src="{spider_logo_url}" alt="Spider Logo" class="spider-logo" />
-        <h2>Internal Links</h2>
-        <table class="internal-links">
-            <tr>
-                <th>No.</th>
-                <th>Internal Link</th>
-            </tr>
+        <h2>Internal Links</h2><table><tr><th>No.</th><th>Internal Link</th></tr>
     """
     
     for i, link in enumerate(all_internal_links, 1):
-        html_content += f'<tr><td>{i}</td><td><a href="{link}">{link}</a></td></tr>'
+        html_content += f'<tr><td>{i}</td><td>{link}</td></tr>'
     
     html_content += "</table>"
 
     html_content += """
-        <h2>External Links</h2>
-        <table class="external-links">
-            <tr>
-                <th>No.</th>
-                <th>External Link</th>
-            </tr>
+        <h2>External Links</h2><table><tr><th>No.</th><th>External Link</th></tr>
     """
     
     for i, link in enumerate(all_external_links, 1):
-        html_content += f'<tr><td>{i}</td><td><a href="{link}">{link}</a></td></tr>'
+        html_content += f'<tr><td>{i}</td><td>{link}</td></tr>'
     
+    html_content += "</table>"
+
     html_content += """
-        </table>
-    </body>
-    </html>
+        <h2>Emails</h2><table><tr><th>No.</th><th>Email</th></tr>
     """
+    
+    for i, email in enumerate(all_emails, 1):
+        html_content += f'<tr><td>{i}</td><td>{email}</td></tr>'
+    
+    html_content += "</table>"
+
+    html_content += """
+        <h2>JavaScript Files</h2><table><tr><th>No.</th><th>JS File</th></tr>
+    """
+    
+    for i, js_file in enumerate(all_js_files, 1):
+        html_content += f'<tr><td>{i}</td><td>{js_file}</td></tr>'
+    
+    html_content += "</table>"
+
+    html_content += """
+        <h2>HTML Comments</h2><table><tr><th>No.</th><th>Comment</th></tr>
+    """
+    
+    for i, comment in enumerate(all_comments, 1):
+        html_content += f'<tr><td>{i}</td><td>{comment}</td></tr>'
+    
+    html_content += "</table>"
 
     with open(output_file, 'w', encoding='utf-8') as f:
         f.write(html_content)
-    
+
     console.print(f"Results saved to {output_file}")
 
-def should_crawl(url, filter_exts):
-    if url in visited:
-        return False
-    if any(url.endswith(ext) for ext in filter_exts):
-        return False
-    return True
+def display_results_in_terminal():
+    # display internal links
+    table = Table(title="Internal Links")
+    table.add_column("No.", justify="center")
+    table.add_column("Internal Link", justify="left")
+    for i, link in enumerate(all_internal_links, 1):
+        table.add_row(str(i), link)
+    console.print(table)
 
-def breadth_first_crawl(start_url, depth_limit, timeout, filter_exts):
-    queue = deque([(start_url, 0)])
+    # display external links
+    table = Table(title="External Links")
+    table.add_column("No.", justify="center")
+    table.add_column("External Link", justify="left")
+    for i, link in enumerate(all_external_links, 1):
+        table.add_row(str(i), link)
+    console.print(table)
+
+    # display emails
+    table = Table(title="Emails")
+    table.add_column("No.", justify="center")
+    table.add_column("Email", justify="left")
+    for i, email in enumerate(all_emails, 1):
+        table.add_row(str(i), email)
+    console.print(table)
+
+    # display js files
+    table = Table(title="JavaScript Files")
+    table.add_column("No.", justify="center")
+    table.add_column("JS File", justify="left")
+    for i, js_file in enumerate(all_js_files, 1):
+        table.add_row(str(i), js_file)
+    console.print(table)
+
+    # display comments
+    table = Table(title="HTML Comments")
+    table.add_column("No.", justify="center")
+    table.add_column("Comment", justify="left")
+    for i, comment in enumerate(all_comments, 1):
+        table.add_row(str(i), comment)
+    console.print(table)
+
+def crawl(url, depth_limit, timeout, filter_exts, args, breadth_first=True):
+    global progress_bar  
+    queue = deque([(url, 0)])
+    if args.output:
+        progress_bar = tqdm(total=depth_limit, desc="Crawling Progress")
+    
     while queue:
-        url, depth = queue.popleft()
-        if depth > depth_limit or url in visited:
+        current_url, depth = queue.popleft()
+        if depth > depth_limit or current_url in visited_urls:
             continue
-        if progress_bar is None:
-            console.print(f"[bold blue]crawling: {url} [depth: {depth}]")
-        html = fetch_page(url, timeout)
+
+        html = fetch_page(current_url, timeout)
         if not html:
             continue
-        internal_links, external_links = extract_links(html, url, filter_exts)
-        all_internal_links.extend(internal_links)
-        all_external_links.extend(external_links)
-        if progress_bar is None:
-            display_results(url, internal_links, external_links)
-        visited.add(url)
+        
+        internal_links, external_links, emails, js_files, comments = extract_links_and_content(html, current_url, filter_exts)
+
+        
+        all_internal_links.update(internal_links)
+        all_external_links.update(external_links)
+        all_emails.update(emails)
+        all_js_files.update(js_files)
+        all_comments.update(comments)
+
+        visited_urls.add(current_url)
+
         for link in internal_links:
-            if should_crawl(link, filter_exts):
+            if link not in visited_urls:
                 queue.append((link, depth + 1))
-        if progress_bar is not None:
+
+        if args.output and progress_bar:
             progress_bar.update(1)
 
-def depth_first_crawl(url, depth, depth_limit, timeout, filter_exts):
-    if depth > depth_limit or url in visited:
-        return
-    if progress_bar is None:
-        console.print(f"[bold blue]crawling: {url} [depth: {depth}]")
-    html = fetch_page(url, timeout)
-    if not html:
-        return
-    internal_links, external_links = extract_links(html, url, filter_exts)
-    all_internal_links.extend(internal_links)
-    all_external_links.extend(external_links)
-    if progress_bar is None:
-        display_results(url, internal_links, external_links)
-    visited.add(url)
-    for link in internal_links:
-        if should_crawl(link, filter_exts):
-            depth_first_crawl(link, depth + 1, depth_limit, timeout, filter_exts)
-    if progress_bar is not None:
-        progress_bar.update(1)
-
-def handle_exit_signal(signal, frame):
-    if args.output:
-        console.print("\n[bold yellow]recon interrupted! saving results...")
-        save_results_to_html(args.output)
-    sys.exit(0)
+    if args.output and progress_bar:
+        progress_bar.close()
 
 def main():
-    global args, progress_bar
+    global all_emails, all_internal_links, all_external_links, all_js_files, all_comments
     accessi_logo()
     args = get_args()
     filter_exts = args.filter.split(",") if args.filter else []
-    console.print("[bold cyan]starting recon...", style="bold green")
-    console.print(f"url: {args.url}")
-    console.print(f"depth limit: {args.depth}")
-    console.print(f"filter extensions: {filter_exts}")
-    console.print(f"timeout: {args.timeout} seconds")
     
-    if args.output:
-        console.print(f"[bold magenta]saving to file: {args.output}")
-        signal.signal(signal.SIGINT, handle_exit_signal)
-        progress_bar = tqdm(total=100, desc="recon progress")
+    signal.signal(signal.SIGINT, lambda sig, frame: sys.exit(0))
 
+    console.print(f"Starting recon for {args.url} up to depth {args.depth}")
+    
     if args.breadth:
-        breadth_first_crawl(args.url, args.depth, args.timeout, filter_exts)
+        crawl(args.url, args.depth, args.timeout, filter_exts, args, breadth_first=True)
     else:
-        depth_first_crawl(args.url, 0, args.depth, args.timeout, filter_exts)
+        crawl(args.url, args.depth, args.timeout, filter_exts, args, breadth_first=False)
 
-    if progress_bar is not None:
-        progress_bar.close()
     if args.output:
         save_results_to_html(args.output)
+    else:
+        display_results_in_terminal()
 
 if __name__ == "__main__":
     main()
